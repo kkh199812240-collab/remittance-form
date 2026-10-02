@@ -77,6 +77,13 @@
   }
   .total output { font-size: 26px; color: var(--text); }
   .total small { font-size: 13px; color: var(--text); }
+  .account + .account { margin-top: 18px; padding-top: 18px; border-top: 1px dashed var(--line); }
+  .acct-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  /* 계좌가 1개뿐이면 번호·삭제·계좌별 금액은 필요 없다 */
+  .account:only-child .acct-head, .account:only-child .acct-amount { display: none; }
+  .account:only-child .acct-row { grid-template-columns: 1fr; }
+  .remove { height: 40px; padding: 0 14px; font-size: 13px; }
+  #addAccount { width: 100%; margin-top: 14px; border-style: dashed; background: #fff; color: var(--green); }
   .notice { margin: 0 0 14px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
   .notice b { color: var(--err); }
   .actions { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -178,23 +185,40 @@
 
     <section>
       <h2><span class="num">4</span>입금 계좌</h2>
-      <div class="row">
-        <div class="field">
-          <label for="accountHolder">예금주</label>
-          <input id="accountHolder" name="accountHolder" placeholder="예금주명" maxlength="40" aria-describedby="err-accountHolder">
-          <p class="err" id="err-accountHolder"></p>
+      <div id="accounts"></div>
+      <button type="button" id="addAccount">+ 계좌 추가 (최대 5개)</button>
+      <!-- 계좌 한 묶음. id·label 연결은 renumberAccounts()가 순서대로 붙인다. -->
+      <template id="account-tpl">
+        <div class="account" role="group">
+          <div class="acct-head">
+            <strong class="acct-title"></strong>
+            <button type="button" class="remove">삭제</button>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label>예금주</label>
+              <input name="accountHolder" placeholder="예금주명" maxlength="40">
+              <p class="err"></p>
+            </div>
+            <div class="field">
+              <label>은행명</label>
+              <input name="bankName" list="banks" placeholder="예: 국민은행" maxlength="20">
+              <p class="err"></p>
+            </div>
+          </div>
+          <div class="row acct-row">
+            <div class="field">
+              <label>계좌번호</label>
+              <input name="accountNumber" inputmode="numeric" placeholder="숫자만 입력" maxlength="24">
+              <p class="err"></p>
+            </div>
+            <div class="field acct-amount">
+              <label>이 계좌 송금액 (선택)</label>
+              <div class="money"><input name="accountAmount" inputmode="numeric" placeholder="0" data-money><span>원</span></div>
+            </div>
+          </div>
         </div>
-        <div class="field">
-          <label for="bankName">은행명</label>
-          <input id="bankName" name="bankName" list="banks" placeholder="예: 국민은행" maxlength="20" aria-describedby="err-bankName">
-          <p class="err" id="err-bankName"></p>
-        </div>
-      </div>
-      <div class="field">
-        <label for="accountNumber">계좌번호</label>
-        <input id="accountNumber" name="accountNumber" inputmode="numeric" placeholder="숫자만 입력" maxlength="24" aria-describedby="err-accountNumber">
-        <p class="err" id="err-accountNumber"></p>
-      </div>
+      </template>
       <datalist id="banks">
         <option value="국민은행"><option value="신한은행"><option value="우리은행"><option value="하나은행">
         <option value="농협은행"><option value="기업은행"><option value="SC제일은행"><option value="카카오뱅크">
@@ -205,7 +229,7 @@
     </section>
 
     <div class="footer">
-      <p class="notice"><b>계좌번호</b>가 포함됩니다. 완성된 문구는 담당자와의 1:1 대화방에만 보내주세요.</p>
+      <p class="notice"><b>계좌번호</b>가 포함됩니다. 계좌가 여러 개면 계좌별 송금액을 적어 주세요. 완성된 문구는 담당자와의 1:1 대화방에만 보내주세요.</p>
       <div class="actions">
         <button type="submit" class="primary">전송 내용 확인</button>
         <button type="reset">입력 초기화</button>
@@ -229,6 +253,8 @@
 <script>
 // ---- 순수 로직 (화면과 무관, selfCheck()로 점검) ----
 const MAX_AMOUNT_DIGITS = 12; // 1조 미만. JS 정수 안전 범위 안.
+const MAX_ACCOUNTS = 5;
+const ACCOUNT_FIELDS = ['accountHolder', 'bankName', 'accountNumber', 'accountAmount'];
 
 const REQUIRED = {
   applicant: '신청인을 입력하세요.',
@@ -237,8 +263,6 @@ const REQUIRED = {
   vehicleNumber: '차량번호를 입력하세요.',
   ownerName: '차주 성명을 입력하세요.',
   ownerPayment: '차주 지급액을 입력하세요.',
-  accountHolder: '예금주를 입력하세요.',
-  bankName: '은행명을 입력하세요.',
 };
 
 // 소수점 이하는 버린다. 붙여넣은 "12,000,000.00"이 100배로 읽히면 안 된다.
@@ -246,30 +270,46 @@ const parseAmount = (value) => Number(String(value ?? '').split('.')[0].replace(
 const formatWon = (amount) => amount.toLocaleString('ko-KR');
 
 function normalize(raw) {
-  const text = (key) => String(raw[key] ?? '').trim();
+  const text = (value) => String(value ?? '').trim();
   return {
-    applicant: text('applicant'),
-    businessType: text('businessType'),
-    vehicleName: text('vehicleName'),
-    vehicleNumber: text('vehicleNumber').replace(/\s/g, ''),
-    ownerName: text('ownerName'),
+    applicant: text(raw.applicant),
+    businessType: text(raw.businessType),
+    vehicleName: text(raw.vehicleName),
+    vehicleNumber: text(raw.vehicleNumber).replace(/\s/g, ''),
+    ownerName: text(raw.ownerName),
     ownerPayment: parseAmount(raw.ownerPayment),
     fee: parseAmount(raw.fee),
-    accountHolder: text('accountHolder'),
-    bankName: text('bankName'),
-    accountNumber: text('accountNumber').replace(/[^\d-]/g, ''),
+    accounts: (raw.accounts ?? [{}]).map((account) => ({
+      accountHolder: text(account.accountHolder),
+      bankName: text(account.bankName),
+      accountNumber: text(account.accountNumber).replace(/[^\d-]/g, ''),
+      amount: parseAmount(account.accountAmount),
+    })),
   };
 }
 
+// 오류 키는 화면 요소의 id와 같다. 계좌 칸은 "이름-순번"(예: accountNumber-1).
 function validate(data) {
   const missing = Object.entries(REQUIRED).filter(([key]) => !data[key]);
-  const errors = Object.fromEntries(missing);
-  return /\d/.test(data.accountNumber) ? errors : { ...errors, accountNumber: '계좌번호를 입력하세요.' };
+  const accountErrors = data.accounts.flatMap((account, i) => [
+    !account.accountHolder && [`accountHolder-${i}`, '예금주를 입력하세요.'],
+    !account.bankName && [`bankName-${i}`, '은행명을 입력하세요.'],
+    !/\d/.test(account.accountNumber) && [`accountNumber-${i}`, '계좌번호를 입력하세요.'],
+  ].filter(Boolean));
+  return Object.fromEntries([...missing, ...accountErrors]);
 }
 
 function buildMessage(data, now) {
   const pad = (n) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const multi = data.accounts.length > 1;
+  const accountLines = data.accounts.flatMap((account, i) => [
+    ...(multi ? [`[계좌 ${i + 1}]`] : []),
+    `예금주: ${account.accountHolder}`,
+    `은행명: ${account.bankName}`,
+    `계좌번호: ${account.accountNumber}`,
+    ...(multi && account.amount ? [`송금액: ${formatWon(account.amount)}원`] : []),
+  ]);
   return [
     '[차량매입 송금의뢰]',
     `신청일시: ${stamp}`,
@@ -281,9 +321,7 @@ function buildMessage(data, now) {
     `차주 지급액: ${formatWon(data.ownerPayment)}원`,
     `수수료: ${formatWon(data.fee)}원`,
     `합계: ${formatWon(data.ownerPayment + data.fee)}원`,
-    `예금주: ${data.accountHolder}`,
-    `은행명: ${data.bankName}`,
-    `계좌번호: ${data.accountNumber}`,
+    ...accountLines,
   ].join('\n');
 }
 
@@ -302,18 +340,29 @@ function selfCheck() {
   const data = normalize({
     applicant: ' 홍길동 ', businessType: '개인사업자', vehicleName: '현대 그랜저', vehicleNumber: '12가 3456',
     ownerName: '김차주', ownerPayment: '12,000,000', fee: '300,000',
-    accountHolder: '김차주', bankName: '국민은행', accountNumber: '123456-78-901234',
+    accounts: [{ accountHolder: '김차주', bankName: '국민은행', accountNumber: '123456-78-901234', accountAmount: '999' }],
   });
+  const [firstAccount] = data.accounts;
   eq(Object.keys(validate(data)).length, 0, '정상 입력은 오류 없음');
   eq(data.vehicleNumber, '12가3456', '차량번호 공백 제거');
   eq(Object.keys(validate({ ...data, fee: 0 })).length, 0, '수수료 0원 허용');
-  eq(validate({ ...data, accountNumber: '-' }).accountNumber, '계좌번호를 입력하세요.', '숫자 없는 계좌번호');
+  eq(validate({ ...data, accounts: [{ ...firstAccount, accountNumber: '-' }] })['accountNumber-0'], '계좌번호를 입력하세요.', '숫자 없는 계좌번호');
 
   const message = buildMessage(data, new Date(2026, 9, 2, 14, 5));
-  eq(message.split('\n').length, 13, '문구 13줄');
+  eq(message.split('\n').length, 13, '계좌 1개 문구는 13줄');
   eq(message.includes('신청일시: 2026-10-02 14:05'), true, '신청일시');
   eq(message.includes('합계: 12,300,000원'), true, '합계');
   eq(message.includes('계좌번호: 123456-78-901234'), true, '계좌번호 전체');
+  eq(message.includes('[계좌 1]') || message.includes('송금액'), false, '계좌 1개면 번호와 계좌별 금액 없음');
+
+  const blankAccount = normalize({ accounts: [{}] }).accounts[0];
+  eq(Object.keys(validate({ ...data, accounts: [firstAccount, blankAccount] })).join(), 'accountHolder-1,bankName-1,accountNumber-1', '빈 두 번째 계좌는 오류 3개');
+
+  const secondAccount = { accountHolder: '박가족', bankName: '신한은행', accountNumber: '110-123-456789', amount: 5000000 };
+  const multiMessage = buildMessage({ ...data, accounts: [{ ...firstAccount, amount: 0 }, secondAccount] }, new Date(2026, 9, 2, 14, 5));
+  eq(multiMessage.split('\n').length, 19, '계좌 2개 문구는 19줄');
+  eq(multiMessage.includes('[계좌 2]\n예금주: 박가족\n은행명: 신한은행\n계좌번호: 110-123-456789\n송금액: 5,000,000원'), true, '두 번째 계좌와 금액');
+  eq(multiMessage.includes('송금액: 0원'), false, '금액 비운 계좌는 송금액 줄 없음');
   return 'selfCheck 통과';
 }
 
@@ -332,7 +381,58 @@ shareBtn.hidden = !canShare;
 copyBtn.classList.toggle('primary', !canShare);
 (canShare ? shareBtn : copyBtn).autofocus = true;
 
-const currentData = () => normalize(Object.fromEntries(new FormData(form)));
+const accountsEl = document.getElementById('accounts');
+const addAccountBtn = document.getElementById('addAccount');
+const accountTpl = document.getElementById('account-tpl');
+
+// 추가·삭제 뒤 계좌 번호와 id·label·오류문구 연결을 화면 순서대로 다시 붙인다.
+function renumberAccounts() {
+  [...accountsEl.children].forEach((accountEl, i) => {
+    const titleEl = accountEl.querySelector('.acct-title');
+    titleEl.textContent = `계좌 ${i + 1}`;
+    titleEl.id = `acct-title-${i}`;
+    accountEl.setAttribute('aria-labelledby', titleEl.id);
+    accountEl.querySelector('.remove').setAttribute('aria-label', `계좌 ${i + 1} 삭제`);
+    for (const input of accountEl.querySelectorAll('input')) {
+      const field = input.closest('.field');
+      const errEl = field.querySelector('.err');
+      input.id = `${input.name}-${i}`;
+      field.querySelector('label').htmlFor = input.id;
+      if (errEl) {
+        errEl.id = `err-${input.id}`;
+        input.setAttribute('aria-describedby', errEl.id);
+      }
+    }
+  });
+  addAccountBtn.hidden = accountsEl.children.length >= MAX_ACCOUNTS;
+}
+
+function addAccount() {
+  accountsEl.append(accountTpl.content.cloneNode(true));
+  renumberAccounts();
+}
+addAccount();
+
+addAccountBtn.addEventListener('click', () => {
+  addAccount();
+  accountsEl.lastElementChild.querySelector('input').focus();
+});
+
+accountsEl.addEventListener('click', (event) => {
+  if (!event.target.matches('.remove')) return;
+  const accountEl = event.target.closest('.account');
+  const hasInput = [...accountEl.querySelectorAll('input')].some((input) => input.value);
+  if (hasInput && !confirm('이 계좌에 입력한 내용을 지울까요?')) return;
+  accountEl.remove();
+  renumberAccounts();
+  addAccountBtn.focus();
+});
+
+const currentData = () => normalize({
+  ...Object.fromEntries(new FormData(form)),
+  accounts: [...accountsEl.children].map((accountEl) =>
+    Object.fromEntries(ACCOUNT_FIELDS.map((name) => [name, accountEl.querySelector(`[name=${name}]`).value]))),
+});
 
 function showErrors(errors) {
   for (const errEl of form.querySelectorAll('.err')) {
@@ -351,10 +451,11 @@ form.addEventListener('input', (event) => {
   const el = event.target;
   if ('money' in el.dataset) el.value = /\d/.test(el.value) ? formatWon(parseAmount(el.value)) : '';
   if (el.name === 'accountNumber') el.value = el.value.replace(/[^\d-]/g, '');
-  const errEl = document.getElementById(`err-${el.name}`);
+  const key = el.type === 'radio' ? el.name : el.id;
+  const errEl = document.getElementById(`err-${key}`);
   if (errEl) {
     errEl.textContent = '';
-    document.getElementById(el.name).setAttribute('aria-invalid', 'false');
+    document.getElementById(key).setAttribute('aria-invalid', 'false');
   }
   const data = currentData();
   totalEl.textContent = formatWon(data.ownerPayment + data.fee);
@@ -380,6 +481,8 @@ form.addEventListener('reset', (event) => {
     event.preventDefault();
     return;
   }
+  accountsEl.replaceChildren(accountsEl.firstElementChild);
+  renumberAccounts();
   showErrors({});
   totalEl.textContent = '0';
 });
